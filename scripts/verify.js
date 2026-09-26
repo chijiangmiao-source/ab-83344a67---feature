@@ -157,6 +157,61 @@ async function httpChecks() {
   else fail('自应用错误缺少位置');
   if (JSON.stringify(o1.error) === JSON.stringify(o2.error)) pass('重复推断错误稳定一致');
   else fail('重复推断错误不一致（不稳定）');
+
+  // 场景四：自应用冲突切片 —— 稳定返回函数体、参数绑定及调用位置
+  if (o1.error && o1.error.slice) {
+    const frags = o1.error.slice.fragments.map((f) => omegaSrc.slice(f.start, f.end));
+    const need = ['fun x -> x x', 'x', 'x x'];
+    const missing = need.filter((s) => !frags.includes(s));
+    if (missing.length === 0) pass('自应用切片含函数体、参数绑定及调用位置');
+    else fail(`自应用切片缺少：${JSON.stringify(missing)}（实际 ${JSON.stringify(frags)}）`);
+  } else {
+    fail('自应用错误未携带冲突依据切片');
+  }
+
+  // 场景五：恒等宏间接传递相加 —— 冲突依据切片覆盖声明、宏定义、调用与相加位置
+  const indirectSrc = [
+    'sensor len : m;',
+    'sensor tim : s;',
+    'let id = fun x -> x;',
+    'id len + id tim',
+    '',
+  ].join('\n');
+  const r5 = await postInfer(indirectSrc);
+  if (!r5.ok && /单位不匹配/.test(r5.error.message)) {
+    pass(`恒等宏间接传递相加被拒绝：${r5.error.message}`);
+    const sl = r5.error.slice;
+    if (sl) {
+      const frags = sl.fragments.map((f) => indirectSrc.slice(f.start, f.end));
+      const need = ['sensor len : m', 'sensor tim : s', 'id len', 'id tim', 'id len + id tim'];
+      const missing = need.filter((s) => !frags.includes(s));
+      if (missing.length === 0) pass('切片含两份传感器声明、相应调用和相加位置');
+      else fail(`切片缺少：${JSON.stringify(missing)}（实际 ${JSON.stringify(frags)}）`);
+      const kinds = new Set(sl.facts.map((f) => f.kind));
+      if (kinds.has('instantiate') && kinds.has('generalize') && kinds.has('constraint')) {
+        pass('切片含 let 泛化、宏实例化与合一约束事实（跨宏传播链完整）');
+      } else {
+        fail(`切片事实种类不全：${JSON.stringify([...kinds])}`);
+      }
+      const seqs = sl.facts.map((f) => f.id);
+      const sorted = [...seqs].sort((a, b) => a - b);
+      if (JSON.stringify(seqs) === JSON.stringify(sorted)) pass('切片步骤按推导顺序排列');
+      else fail('切片步骤未按推导顺序排列');
+      if (sl.rootFactId && sl.facts.some((f) => f.id === sl.rootFactId && f.kind === 'constraint')) {
+        pass('切片标注首次不可合一的根约束');
+      } else {
+        fail('切片缺少首次不可合一根约束标注');
+      }
+    } else {
+      fail('恒等宏间接冲突未携带切片');
+    }
+    if (r5.error.spans.length === 2) pass('主定位仍保持两个操作数契约');
+    else fail(`主定位数量异常：${r5.error.spans.length}（期望 2）`);
+    if (!('expressions' in r5)) pass('出错响应不携带旧的成功结论');
+    else fail('出错响应仍携带 expressions（旧结论未清除）');
+  } else {
+    fail(`恒等宏间接传递相加未被正确拒绝：${JSON.stringify(r5)}`);
+  }
 }
 
 (async () => {

@@ -147,3 +147,111 @@ test('推断确定性：同一脚本两次结果完全一致', () => {
   const b = runInference(IDENTITY_SCRIPT);
   assert.deepEqual(a, b);
 });
+
+/* ---------------- 冲突依据切片 ---------------- */
+
+const INDIRECT_SCRIPT = `sensor len : m;
+sensor tim : s;
+let id = fun x -> x;
+id len + id tim
+`;
+
+test('恒等宏间接传递相加：切片含两份传感器声明、相应调用与相加位置', () => {
+  const r = runInference(INDIRECT_SCRIPT);
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /单位不匹配/);
+  assert.ok(r.error.slice, '失败响应应携带冲突依据切片');
+  const frags = r.error.slice.fragments.map((f) => INDIRECT_SCRIPT.slice(f.start, f.end));
+  for (const need of ['sensor len : m', 'sensor tim : s', 'id len', 'id tim', 'id len + id tim']) {
+    assert.ok(frags.includes(need), `切片必须包含「${need}」，实际：${JSON.stringify(frags)}`);
+  }
+  // 宏定义与实例化边也在切片中（跨宏调用传播链由此贯通）
+  assert.ok(frags.includes('let id = fun x -> x'), '切片应包含宏定义（let 泛化点）');
+  assert.ok(frags.includes('fun x -> x'), '切片应包含宏函数体');
+  const kinds = new Set(r.error.slice.facts.map((f) => f.kind));
+  assert.ok(kinds.has('instantiate'), '切片应含宏实例化事实');
+  assert.ok(kinds.has('generalize'), '切片应含 let 泛化事实');
+  assert.ok(kinds.has('constraint'), '切片应含合一约束事实');
+  // 主定位仍保持「两个操作数」契约
+  assert.equal(r.error.spans.length, 2);
+  assert.equal(INDIRECT_SCRIPT.slice(r.error.spans[0].start, r.error.spans[0].end), 'id len');
+  assert.equal(INDIRECT_SCRIPT.slice(r.error.spans[1].start, r.error.spans[1].end), 'id tim');
+  assert.equal(r.expressions, undefined, '出错响应不得携带旧的成功结论');
+});
+
+test('冲突切片按推导顺序展示且从首次不可合一处反向归并', () => {
+  const r = runInference(INDIRECT_SCRIPT);
+  const { facts, steps, rootFactId } = r.error.slice;
+  assert.deepEqual(steps, facts.map((f) => f.id), '步骤即按推导顺序排列的事实');
+  const seqs = facts.map((f) => f.id);
+  assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), '推导顺序按事实登记先后');
+  const root = facts.find((f) => f.id === rootFactId);
+  assert.ok(root, '切片应标注首次不可合一的根约束');
+  assert.equal(root.kind, 'constraint');
+  assert.match(root.label, /须与结果单位一致/);
+  // 每个事实都能沿依赖边到达根（反向闭包性质：无悬挂事实）
+  const byId = new Map(facts.map((f) => [f.id, f]));
+  const reachesRoot = (id, seen = new Set()) => {
+    if (id === rootFactId) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    const f = byId.get(id);
+    return facts.some((g) => g.deps.includes(id) && reachesRoot(g.id, seen));
+  };
+  for (const f of facts) assert.ok(reachesRoot(f.id), `事实 #${f.id} 应有路径到达冲突根`);
+});
+
+test('冲突切片最小性：无关声明与无关宏不进入切片', () => {
+  const src = `sensor z : m/s;
+let g = fun y -> y * y;
+sensor len : m;
+sensor tim : s;
+let id = fun x -> x;
+id len + id tim
+`;
+  const r = runInference(src);
+  assert.equal(r.ok, false);
+  const frags = r.error.slice.fragments.map((f) => src.slice(f.start, f.end));
+  assert.ok(!frags.some((s) => s.includes('sensor z')), '无关传感器声明不得进入切片');
+  assert.ok(!frags.some((s) => s.includes('let g')), '无关宏定义不得进入切片');
+  assert.ok(frags.includes('sensor len : m') && frags.includes('sensor tim : s'));
+});
+
+test('自应用：切片稳定返回函数体、参数绑定及调用位置', () => {
+  const src = 'let f = fun x -> x x;\nf\n';
+  const r1 = runInference(src);
+  const r2 = runInference(src);
+  assert.equal(r1.ok, false);
+  assert.ok(r1.error.slice, '自应用失败应携带切片');
+  const frags = r1.error.slice.fragments.map((f) => src.slice(f.start, f.end));
+  assert.ok(frags.includes('fun x -> x x'), '切片应包含形成循环的函数体');
+  assert.ok(frags.includes('x'), '切片应包含参数绑定');
+  assert.ok(frags.includes('x x'), '切片应包含调用位置');
+  const roles = new Set(r1.error.slice.facts.map((f) => f.role));
+  assert.ok([...roles].some((s) => /参数绑定/.test(s)));
+  assert.ok([...roles].some((s) => /函数体/.test(s)));
+  assert.deepEqual(r1.error, r2.error, '自应用切片应稳定一致');
+});
+
+test('切片步骤携带依赖边，可复核跨宏传播链', () => {
+  const r = runInference(INDIRECT_SCRIPT);
+  const { facts } = r.error.slice;
+  const inst = facts.filter((f) => f.kind === 'instantiate');
+  assert.equal(inst.length, 2, '两次宏引用各有一条实例化事实');
+  const gen = facts.find((f) => f.kind === 'generalize');
+  for (const i of inst) assert.ok(i.deps.includes(gen.id), '实例化边应指向 let 泛化点');
+  // 传感器声明是切片叶子（无依赖的来源）
+  const sensors = facts.filter((f) => f.kind === 'sensor');
+  assert.equal(sensors.length, 2);
+  for (const s of sensors) assert.deepEqual(s.deps, []);
+});
+
+test('直接异单位相加：切片同样覆盖两个声明与相加位置', () => {
+  const src = 'sensor a : m;\nsensor b : s;\na + b\n';
+  const r = runInference(src);
+  assert.equal(r.ok, false);
+  const frags = r.error.slice.fragments.map((f) => src.slice(f.start, f.end));
+  for (const need of ['sensor a : m', 'sensor b : s', 'a + b']) {
+    assert.ok(frags.includes(need), `切片必须包含「${need}」`);
+  }
+});
