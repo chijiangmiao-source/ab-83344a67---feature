@@ -22,6 +22,14 @@ function parse(source) {
   let pos = 0;
   let nextId = 1;
   const nodes = [];
+  // 单位基元（m、s、…）的源码锚点：id 与 monoBase 的 src 对应
+  const unitSrcs = [];
+  let nextUnitSrc = 1;
+  const unitAnchor = (name, tok) => {
+    const id = nextUnitSrc++;
+    unitSrcs.push({ id, name, start: tok.start, end: tok.end });
+    return id;
+  };
 
   const peek = () => tokens[pos];
 
@@ -99,7 +107,7 @@ function parse(source) {
         pos++;
         exp = sign * parseInt(nt.value, 10);
       }
-      return U.monoBase(t.value, exp);
+      return U.monoBase(t.value, exp, [unitAnchor(t.value, t)]);
     }
     if (t.type === 'punct' && t.value === '(') {
       pos++;
@@ -144,7 +152,7 @@ function parse(source) {
       if (t.type === 'punct' && (t.value === '+' || t.value === '-')) {
         pos++;
         const right = parseMul();
-        left = mkNode('binop', { op: t.value, left, right }, left.span.start, right.span.end);
+        left = mkNode('binop', { op: t.value, opSpan: { start: t.start, end: t.end }, left, right }, left.span.start, right.span.end);
       } else {
         return left;
       }
@@ -158,7 +166,7 @@ function parse(source) {
       if (t.type === 'punct' && (t.value === '*' || t.value === '/')) {
         pos++;
         const right = parseApp();
-        left = mkNode('binop', { op: t.value, left, right }, left.span.start, right.span.end);
+        left = mkNode('binop', { op: t.value, opSpan: { start: t.start, end: t.end }, left, right }, left.span.start, right.span.end);
       } else {
         return left;
       }
@@ -257,7 +265,7 @@ function parse(source) {
     }
     statements.push(parseStatement());
   }
-  return { statements, nodes, source };
+  return { statements, nodes, source, unitSrcs };
 }
 
 module.exports = { parse, ParseError };

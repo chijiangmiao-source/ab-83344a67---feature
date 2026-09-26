@@ -91,3 +91,85 @@ td.pos { color: var(--dim); white-space: nowrap; }
 .mk5 { background: #fbcfe8; box-shadow: inset 0 0 0 1px #ec4899; }
 .gen-item { display: flex; gap: 10px; align-items: baseline; margin: 4px 0; flex-wrap: wrap; }
 select { padding: 5px 8px; border-radius: 6px; border: 1px solid #cbd5e1; }
+
+/* ---------------- 冲突依据切片审计 ---------------- */
+.slice-audit { margin-top: 10px; border-top: 2px dashed #f3b9b3; padding-top: 12px; }
+.slice-head { margin: 4px 0 2px; font-size: 14px; }
+.slice-conflict { color: var(--err); font-size: 13px; margin: 2px 0 6px; }
+.slice-src { margin: 8px 0; }
+mark.slice-mark {
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 3px;
+  cursor: pointer;
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,.35);
+  transition: box-shadow .1s, outline .1s;
+}
+mark.slice-mark:hover { box-shadow: inset 0 0 0 1px #111, inset 0 -2px 0 #111; }
+mark.slice-mark.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+mark.role-sensor { background: #bfdbfe; }
+mark.role-let    { background: #ddd6fe; }
+mark.role-fun    { background: #c7d2fe; }
+mark.role-bind   { background: #fef08a; }
+mark.role-ref    { background: #a7f3d0; }
+mark.role-call   { background: #bbf7d0; }
+mark.role-expr   { background: #fdba74; }
+mark.role-op     { background: #fca5a5; font-weight: 700; }
+mark.role-literal{ background: #e2e8f0; }
+mark.role-neg, mark.role-other { background: #e9d5ff; }
+
+.frag-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.frag-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: #f8fafc;
+  color: var(--ink);
+  border: 1px solid #cbd5e1;
+  border-left-width: 5px;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  text-align: left;
+  max-width: 260px;
+}
+.frag-chip code { background: transparent; padding: 0; font-size: 12px; word-break: break-all; }
+.frag-chip .frag-role { font-weight: 700; font-size: 11px; color: var(--dim); }
+.frag-chip:hover { background: #eef4ff; }
+.frag-chip.selected { outline: 2px solid var(--accent); outline-offset: 0; background: #e7f0ff; }
+.frag-chip.role-sensor { border-left-color: #3b82f6; }
+.frag-chip.role-let    { border-left-color: #8b5cf6; }
+.frag-chip.role-fun    { border-left-color: #6366f1; }
+.frag-chip.role-bind   { border-left-color: #ca8a04; }
+.frag-chip.role-ref    { border-left-color: #10b981; }
+.frag-chip.role-call   { border-left-color: #22c55e; }
+.frag-chip.role-expr   { border-left-color: #ea580c; }
+.frag-chip.role-op     { border-left-color: #dc2626; }
+.frag-chip.role-literal{ border-left-color: #64748b; }
+.frag-chip.role-neg, .frag-chip.role-other { border-left-color: #a855f7; }
+
+.slice-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
+@media (max-width: 860px) { .slice-cols { grid-template-columns: 1fr; } }
+.slice-steps, .slice-chain {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: #fcfdff;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.slice-steps h4, .slice-chain h4 { margin: 4px 0 8px; font-size: 13px; position: sticky; top: 0; background: #fcfdff; }
+.slice-steps ol, .slice-chain ol { margin: 4px 0; padding-left: 20px; }
+.step-item, .chain-step {
+  list-style: none;
+  position: relative;
+  margin: 0 0 8px;
+  padding: 4px 8px 4px 14px;
+  border-left: 2px solid #cbd5e1;
+}
+.step-item { cursor: default; }
+.step-item.goal, .chain-step.goal { border-left-color: var(--err); background: #fef2f2; border-radius: 0 6px 6px 0; }
+.step-title { display: block; font-weight: 600; font-size: 12.5px; }
+.step-detail { display: block; font-size: 12px; color: var(--dim); margin-top: 1px; }
+.step-item.goal .step-title, .chain-step.goal .step-title { color: var(--err); }

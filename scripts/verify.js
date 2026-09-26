@@ -157,6 +157,63 @@ async function httpChecks() {
   else fail('自应用错误缺少位置');
   if (JSON.stringify(o1.error) === JSON.stringify(o2.error)) pass('重复推断错误稳定一致');
   else fail('重复推断错误不一致（不稳定）');
+
+  // 场景四：冲突依据切片 —— 长度与时间经恒等宏间接传递后相加
+  const indirectSrc = [
+    'sensor len : m;',
+    'sensor tim : s;',
+    'let id = fun x -> x;',
+    'id len + id tim',
+    '',
+  ].join('\n');
+  const r4 = await postInfer(indirectSrc);
+  if (!r4.ok && r4.error.slice) {
+    pass('间接冲突返回冲突依据切片');
+    if (!('expressions' in r4)) pass('切片响应同样不携带旧结论');
+    else fail('切片响应携带了 expressions（旧结论未清除）');
+    const fragTexts = r4.error.slice.fragments.map((f) => f.text);
+    const mustHave = ['sensor len : m', 'sensor tim : s', 'let id = fun x -> x', 'id len', 'id tim', '+'];
+    const missing = mustHave.filter((t) => !fragTexts.includes(t));
+    if (missing.length === 0) pass('切片含两份传感器声明、宏定义、两次调用与相加位置');
+    else fail(`切片缺少关键片段：${JSON.stringify(missing)}`);
+    // 无关片段检查：切片不得含非两侧调用以外的噪声（此处脚本本身无无关代码）
+    if (r4.error.slice.fragments.every((f) => f.start >= 0 && f.end > f.start)) {
+      pass('切片全部片段带有效源码区间');
+    } else fail('切片存在无效区间');
+    // 推导顺序：一次泛化、两次实例化
+    const kinds = r4.error.slice.steps.map((s) => s.kind);
+    if (kinds.filter((k) => k === 'generalize').length === 1) pass('切片含一次 let 泛化');
+    else fail(`切片泛化次数异常：${kinds.filter((k) => k === 'generalize').length}`);
+    if (kinds.filter((k) => k === 'instantiate').length === 2) pass('切片含两次独立实例化');
+    else fail(`切片实例化次数异常：${kinds.filter((k) => k === 'instantiate').length}`);
+    // 传播链：两份声明各自跨宏到达冲突，且相加位置链覆盖两侧
+    const chainOf = (text) => r4.error.slice.fragments.find((f) => f.text === text).chain;
+    const lenReaches = chainOf('sensor len : m').some((c) => c.isGoal);
+    const timReaches = chainOf('sensor tim : s').some((c) => c.isGoal);
+    if (lenReaches && timReaches) pass('两份声明的传播链均跨宏调用到达相加冲突');
+    else fail(`传播链未都到达冲突（len=${lenReaches}, tim=${timReaches}）`);
+    const plusChain = chainOf('+');
+    if (plusChain.some((c) => /num<m>/.test(c.detail)) && plusChain.some((c) => /num<s>/.test(c.detail))) {
+      pass('相加位置链同时呈现两侧约束如何归并到冲突');
+    } else fail('相加位置链未覆盖两侧');
+  } else {
+    fail(`间接冲突未返回切片：${JSON.stringify(r4).slice(0, 200)}`);
+  }
+
+  // 场景五：自应用切片 —— 稳定包含函数体、参数绑定与调用位置
+  if (o1.ok === false && o1.error.slice) {
+    const of = o1.error.slice.fragments;
+    const hasBody = of.some((f) => f.text === 'fun x -> x x' && f.role === '函数体');
+    const hasBind = of.some((f) => f.role === '参数绑定' && f.text === 'x');
+    const hasCall = of.some((f) => f.text === 'x x' && f.role === '宏调用');
+    if (hasBody && hasBind && hasCall) pass('自应用切片含函数体、参数绑定、调用位置');
+    else fail(`自应用切片不完整（body=${hasBody}, bind=${hasBind}, call=${hasCall}）`);
+    const bindChain = of.find((f) => f.role === '参数绑定').chain;
+    if (bindChain.some((c) => c.isGoal)) pass('参数绑定传播链直达自应用冲突点');
+    else fail('参数绑定传播链未到达冲突点');
+  } else {
+    fail('自应用未返回冲突切片');
+  }
 }
 
 (async () => {

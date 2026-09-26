@@ -147,3 +147,122 @@ test('推断确定性：同一脚本两次结果完全一致', () => {
   const b = runInference(IDENTITY_SCRIPT);
   assert.deepEqual(a, b);
 });
+
+/* ---------------- 冲突依据切片审计 ---------------- */
+
+const INDIRECT_SCRIPT = `// 长度与时间经恒等宏间接传递后相加
+sensor len : m;
+sensor tim : s;
+let id = fun x -> x;
+id len + id tim
+`;
+
+test('切片：长度与时间经恒等宏间接相加，含两份声明、相应调用与相加位置', () => {
+  const r = runInference(INDIRECT_SCRIPT);
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /单位不匹配/);
+  const slice = r.error.slice;
+  assert.ok(slice, '失败结果应携带冲突依据切片');
+  const texts = slice.fragments.map((f) => f.text);
+  assert.ok(texts.includes('sensor len : m'), '切片须含长度传感器声明');
+  assert.ok(texts.includes('sensor tim : s'), '切片须含时间传感器声明');
+  assert.ok(texts.includes('id len'), '切片须含长度侧宏调用');
+  assert.ok(texts.includes('id tim'), '切片须含时间侧宏调用');
+  assert.ok(texts.includes('+'), '切片须含相加位置');
+  assert.ok(texts.includes('let id = fun x -> x'), '切片须含宏定义（let 泛化）');
+  // 两个操作数各自的调用都在，而不是只剩最后一个操作符
+  const roles = slice.fragments.map((f) => f.role);
+  assert.equal(roles.filter((x) => x === '宏调用').length, 2);
+  assert.ok(roles.includes('相加位置'));
+});
+
+test('切片：按推导顺序呈现 let 泛化与每次实例化', () => {
+  const r = runInference(INDIRECT_SCRIPT);
+  const kinds = r.error.slice.steps.map((s) => s.kind);
+  // 泛化恰有一次，两次引用各自实例化（新鲜变量、互不影响）
+  assert.equal(kinds.filter((k) => k === 'generalize').length, 1);
+  assert.equal(kinds.filter((k) => k === 'instantiate').length, 2);
+  // 步骤严格按推导顺序（factId 升序）
+  const ids = r.error.slice.steps.map((s) => s.factId);
+  assert.deepEqual(ids, [...ids].sort((a, b) => a - b));
+  // 每个实例化步骤都有其前提（泛化事实），来源可追溯
+  for (const s of r.error.slice.steps.filter((x) => x.kind === 'instantiate')) {
+    const gen = r.error.slice.steps.find((g) => g.kind === 'generalize');
+    assert.ok(s.deps.includes(gen.factId), '实例化须依赖 let 泛化事实');
+  }
+});
+
+test('切片：点选片段的传播链跨宏调用到达冲突，且不串入另一侧', () => {
+  const r = runInference(INDIRECT_SCRIPT);
+  const slice = r.error.slice;
+  const byText = (t) => slice.fragments.find((f) => f.text === t);
+  const lenChain = byText('sensor len : m').chain;
+  const timChain = byText('sensor tim : s').chain;
+  // 两条链都抵达同一冲突点（相加约束）
+  assert.ok(lenChain.some((c) => c.isGoal), '长度声明链应到达冲突点');
+  assert.ok(timChain.some((c) => c.isGoal), '时间声明链应到达冲突点');
+  // 链中含跨宏环节：实例化 与 调用
+  const kinds = (c) => c.map((x) => x.kind);
+  assert.ok(kinds(lenChain).includes('instantiate'), '长度链经过实例化');
+  assert.ok(kinds(lenChain).includes('app'), '长度链经过宏调用');
+  assert.ok(kinds(timChain).includes('instantiate'), '时间链经过实例化');
+  // 严格按推导顺序
+  const sorted = (c) => [...c.map((x) => x.factId)].sort((a, b) => a - b);
+  assert.deepEqual(lenChain.map((x) => x.factId), sorted(lenChain));
+  // 长度侧链不含时间侧独有的调用（按 detail 中 num<s> 判定）；冲突点描述同时含两侧，故排除
+  const nonGoal = (c) => c.filter((x) => !x.isGoal);
+  assert.ok(!nonGoal(lenChain).some((c) => /num<s>/.test(c.detail)), '长度侧链不应串入时间侧调用');
+  assert.ok(!nonGoal(timChain).some((c) => /num<m>/.test(c.detail) && /须与/.test(c.detail)), '时间侧链不应串入长度侧调用');
+  // 相加位置是两条链的汇合点：其链覆盖两侧
+  const plusChain = byText('+').chain;
+  assert.ok(plusChain.some((c) => /num<m>/.test(c.detail)) && plusChain.some((c) => /num<s>/.test(c.detail)));
+});
+
+test('切片最小性：无关声明不入片（不按文本邻近、不试探脚本）', () => {
+  const src = 'sensor a : m;\nsensor b : s;\nsensor noise : m;\nlet unused = fun z -> z;\na + b\n';
+  const r = runInference(src);
+  assert.equal(r.ok, false);
+  const texts = r.error.slice.fragments.map((f) => f.text);
+  assert.ok(!texts.some((t) => t.includes('noise')), '无关传感器声明不应进入冲突切片');
+  assert.ok(!texts.some((t) => t.includes('unused')), '无关宏定义不应进入冲突切片');
+  assert.ok(texts.includes('sensor a : m'));
+  assert.ok(texts.includes('sensor b : s'));
+});
+
+test('切片：单态 let 别名多跳传播仍可回溯到两份声明', () => {
+  const src = 'sensor a : m;\nsensor b : s;\nlet p = a;\nlet q = b;\np + q\n';
+  const r = runInference(src);
+  assert.equal(r.ok, false);
+  const texts = r.error.slice.fragments.map((f) => f.text);
+  assert.ok(texts.includes('sensor a : m') && texts.includes('sensor b : s'));
+  assert.ok(texts.includes('let p = a') && texts.includes('let q = b'));
+  assert.ok(texts.includes('+'));
+});
+
+test('切片：自应用稳定返回函数体、参数绑定与调用位置', () => {
+  const src = 'let f = fun x -> x x;\nf\n';
+  const r1 = runInference(src);
+  const r2 = runInference(src);
+  assert.equal(r1.ok, false);
+  const slice = r1.error.slice;
+  assert.ok(slice, '自应用应携带切片');
+  const frags = slice.fragments;
+  assert.ok(frags.some((f) => f.text === 'fun x -> x x' && f.role === '函数体'), '须含形成循环的函数体');
+  assert.ok(frags.some((f) => f.role === '参数绑定' && f.text === 'x'), '须含参数绑定 x');
+  assert.ok(frags.some((f) => f.text === 'x x' && f.role === '宏调用'), '须含自应用调用位置');
+  // 冲突点为该调用约束，参数绑定链可一步到达
+  const bindFrag = frags.find((f) => f.role === '参数绑定');
+  assert.ok(bindFrag.chain.some((c) => c.isGoal));
+  // 稳定一致
+  assert.deepEqual(r1.error, r2.error);
+});
+
+test('切片：全部片段带源码区间，可供页面高亮', () => {
+  const r = runInference(INDIRECT_SCRIPT);
+  for (const f of r.error.slice.fragments) {
+    assert.ok(Number.isInteger(f.start) && Number.isInteger(f.end) && f.end > f.start);
+    assert.equal(INDIRECT_SCRIPT.slice(f.start, f.end).replace(/\s+/g, ' ').trim(), f.text);
+    assert.ok(Array.isArray(f.chain) && f.chain.length > 0);
+  }
+  assert.match(r.error.slice.conflict, /首次不可合一/);
+});
